@@ -1,0 +1,254 @@
+-- ============================================================
+-- SIBI - Sistema de Inventario de Bienes Institucionales
+-- Universidad de Costa Rica - Escuela de Ingeniería Civil
+-- ============================================================
+
+-- 1. Creación de la Base de Datos
+CREATE DATABASE SIBI;
+GO
+
+USE SIBI;
+GO
+
+-- 2. Tabla Placa
+--    Registra el número de placa y su tipo (institucional o interno).
+CREATE TABLE Placa (
+    Numero  VARCHAR(10)  NOT NULL,
+    Tipo    VARCHAR(15) NOT NULL,
+
+    CONSTRAINT PK_Placa      PRIMARY KEY (Numero),
+    CONSTRAINT CHK_Placa_Tipo CHECK (Tipo IN ('Institucional', 'Interno'))
+);
+
+-- 3. Tabla Usuario
+--    Cuentas de acceso al sistema. Solo se permiten correos @ucr.ac.cr.
+CREATE TABLE Usuario (
+    Nombre                VARCHAR(50)  NOT NULL,
+    Correo                VARCHAR(50)  NOT NULL,
+    Contrasena            VARCHAR(255) NOT NULL,
+    Permisos              VARCHAR(20)  NOT NULL,
+    EsContrasenaTemporal  BIT          NOT NULL DEFAULT 0,
+    IntentosFallidos      INT          NOT NULL DEFAULT 0,
+    Activo                BIT          NOT NULL DEFAULT 1,
+
+    CONSTRAINT PK_Usuario          PRIMARY KEY (Correo),
+    CONSTRAINT CHK_Usuario_Permisos CHECK (Permisos IN ('Administradora', 'GTI', 'JefaAdministrativa', 'Invitado')),
+    CONSTRAINT CHK_Usuario_Correo   CHECK (Correo LIKE '%@ucr.ac.cr')
+);
+
+-- 4. Tabla Encargado
+--    Personas responsables de activos. Pueden existir sin cuenta de sistema.
+CREATE TABLE Encargado (
+    Id     UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_Encargado_Id DEFAULT NEWID(),
+    Nombre VARCHAR(50)      NOT NULL,
+    Rol    VARCHAR(30)      NOT NULL,
+
+    CONSTRAINT PK_Encargado PRIMARY KEY (Id)
+);
+
+-- 5. Tabla Categoria
+--    Categorías de activos administradas por la Administradora.
+CREATE TABLE Categoria (
+    Id     INT           IDENTITY(1,1) NOT NULL,
+    Nombre NVARCHAR(30)  NOT NULL,
+    Icono  NVARCHAR(30)  NULL,
+
+    CONSTRAINT PK_Categoria      PRIMARY KEY (Id),
+    CONSTRAINT UQ_Categoria_Nombre UNIQUE (Nombre)
+);
+
+-- 6. Tabla Ubicacion
+--    Almacena la ubicación actual y la anterior de un activo,
+--    junto con los encargados correspondientes a cada una.
+CREATE TABLE Ubicacion (
+    Id                  BIGINT           IDENTITY(1,1) NOT NULL,
+    Actual              VARCHAR(60)      NOT NULL,
+    Anterior            VARCHAR(60)      NOT NULL,
+    EncargadoActual     UNIQUEIDENTIFIER NOT NULL,
+    EncargadoAnterior   UNIQUEIDENTIFIER NOT NULL,
+
+    CONSTRAINT PK_Ubicacion PRIMARY KEY (Id),
+
+    CONSTRAINT FK_Ubicacion_EncargadoActual
+        FOREIGN KEY (EncargadoActual)   REFERENCES Encargado(Id),
+
+    CONSTRAINT FK_Ubicacion_EncargadoAnterior
+        FOREIGN KEY (EncargadoAnterior) REFERENCES Encargado(Id)
+);
+
+-- 7. Tabla Activo
+--    Tabla central del sistema. Registra cada bien institucional.
+--    Longitudes de campo ajustadas a las reglas de negocio del mockup.
+CREATE TABLE Activo (
+    Placa          VARCHAR(10)   NOT NULL,
+    Marca          VARCHAR(50)  NOT NULL,
+    Modelo         VARCHAR(50)  NOT NULL,
+    NumSerial      VARCHAR(50)  NOT NULL,
+    Articulo       VARCHAR(50)  NOT NULL,
+    CategoriaId    INT          NOT NULL,
+    Observaciones  VARCHAR(200) NULL,
+    Ubicacion      BIGINT       NOT NULL,
+    Estado         VARCHAR(20)  NOT NULL DEFAULT 'Activo',
+    FechaDesecho   DATE         NULL,
+
+    CONSTRAINT PK_Activo PRIMARY KEY (Placa),
+
+    CONSTRAINT FK_Activo_Placa
+        FOREIGN KEY (Placa)       REFERENCES Placa(Numero),
+
+    CONSTRAINT FK_Activo_Categoria
+        FOREIGN KEY (CategoriaId) REFERENCES Categoria(Id),
+
+    CONSTRAINT FK_Activo_Ubicacion
+        FOREIGN KEY (Ubicacion)   REFERENCES Ubicacion(Id),
+
+    CONSTRAINT CHK_Activo_Estado
+        CHECK (Estado IN ('Activo', 'Mantenimiento', 'Desecho')),
+
+    -- FechaDesecho solo tiene valor cuando el estado es Desecho
+    CONSTRAINT CHK_Activo_FechaDesecho
+        CHECK (Estado = 'Desecho' AND FechaDesecho IS NOT NULL
+            OR Estado <> 'Desecho' AND FechaDesecho IS NULL)
+);
+
+-- 8. Tabla Historial
+--    Registro de auditoría. Cada cambio relevante sobre un activo
+--    genera una fila aquí (gestionado desde el backend, no con triggers).
+CREATE TABLE Historial (
+    Id            BIGINT       IDENTITY(1,1) NOT NULL,
+    ActivoPlaca   VARCHAR(10)   NOT NULL,
+    UsuarioCorreo VARCHAR(50)  NOT NULL,
+    TipoAccion    VARCHAR(20)  NOT NULL,
+    Descripcion   VARCHAR(255) NULL,
+    FechaHora     DATETIME     NOT NULL DEFAULT GETDATE(),
+
+    CONSTRAINT PK_Historial PRIMARY KEY (Id),
+
+    CONSTRAINT FK_Historial_Activo
+        FOREIGN KEY (ActivoPlaca)   REFERENCES Activo(Placa),
+
+    CONSTRAINT FK_Historial_Usuario
+        FOREIGN KEY (UsuarioCorreo) REFERENCES Usuario(Correo),
+
+    CONSTRAINT CHK_Historial_TipoAccion
+        CHECK (TipoAccion IN (
+            'Creacion',
+            'CambioUbicacion',
+            'CambioEncargado',
+            'CambioEstado',
+            'CambioPlaca',
+            'Eliminacion',
+            'Aprobacion',
+            'Rechazo',
+            'SolicitudCambio',
+            'SolicitudAprobada',
+            'SolicitudRechazada'
+        ))
+);
+
+-- 9. Tabla SolicitudCambio
+--    Propuestas de cambio enviadas por la JefaAdministrativa.
+--    Deben ser aprobadas o rechazadas por Administradora o GTI.
+--    Los cambios propuestos se serializan como JSON en DatosNuevos.
+CREATE TABLE SolicitudCambio (
+    Id                INT          IDENTITY(1,1) NOT NULL,
+    ActivoPlaca       VARCHAR(10)   NOT NULL,
+    SolicitanteCorreo VARCHAR(50)  NOT NULL,
+    FechaSolicitud    DATETIME     NOT NULL DEFAULT GETDATE(),
+    DatosNuevos       NVARCHAR(MAX) NOT NULL,
+    Estado            VARCHAR(20)  NOT NULL DEFAULT 'Pendiente',
+    RevisorCorreo     VARCHAR(50)  NULL,
+    FechaResolucion   DATETIME     NULL,
+    Comentario        NVARCHAR(500) NULL,
+
+    CONSTRAINT PK_SolicitudCambio PRIMARY KEY (Id),
+
+    CONSTRAINT FK_SolicitudCambio_Activo
+        FOREIGN KEY (ActivoPlaca)       REFERENCES Activo(Placa),
+
+    CONSTRAINT FK_SolicitudCambio_Solicitante
+        FOREIGN KEY (SolicitanteCorreo) REFERENCES Usuario(Correo),
+
+    CONSTRAINT FK_SolicitudCambio_Revisor
+        FOREIGN KEY (RevisorCorreo)     REFERENCES Usuario(Correo),
+
+    CONSTRAINT CHK_SolicitudCambio_Estado
+        CHECK (Estado IN ('Pendiente', 'Aprobada', 'Rechazada'))
+);
+
+-- 10. Tabla SolicitudActivo
+--     Propuestas de alta de activos nuevos enviadas por la JefaAdministrativa.
+--     Deben ser aprobadas o rechazadas por Administradora o GTI, que además
+--     pueden corregir cualquier dato propuesto antes de aprobar. Al aprobarse
+--     se crea el Activo real (junto con su Placa y Ubicacion).
+--
+--     La categoría y el encargado se guardan de una de dos formas mutuamente
+--     excluyentes: una referencia a una fila existente (CategoriaId / EncargadoId)
+--     o una PROPUESTA DE CREACIÓN (CategoriaNuevaNombre / EncargadoNuevoNombre +
+--     EncargadoNuevoRol), que se materializa recién al aprobar la solicitud.
+CREATE TABLE SolicitudActivo (
+    Id                INT           IDENTITY(1,1) NOT NULL,
+    SolicitanteCorreo VARCHAR(50)   NOT NULL,
+    FechaSolicitud    DATETIME      NOT NULL DEFAULT GETDATE(),
+
+    Placa             VARCHAR(10)   NOT NULL,
+    TipoPlaca         VARCHAR(15)   NOT NULL DEFAULT 'Institucional',
+    Marca             VARCHAR(50)   NOT NULL,
+    Modelo            VARCHAR(50)   NOT NULL,
+    NumSerial         VARCHAR(50)   NOT NULL,
+    Articulo          VARCHAR(50)   NOT NULL,
+    Observaciones     VARCHAR(200)  NULL,
+    UbicacionActual   VARCHAR(60)   NOT NULL,
+
+    CategoriaId          INT           NULL,
+    CategoriaNuevaNombre NVARCHAR(30)  NULL,
+    CategoriaNuevaIcono  NVARCHAR(30)  NULL,
+
+    EncargadoId          UNIQUEIDENTIFIER NULL,
+    EncargadoNuevoNombre VARCHAR(50)   NULL,
+    EncargadoNuevoRol    VARCHAR(30)   NULL,
+
+    Estado            VARCHAR(20)   NOT NULL DEFAULT 'Pendiente',
+    RevisorCorreo     VARCHAR(50)   NULL,
+    FechaResolucion   DATETIME      NULL,
+    Comentario        NVARCHAR(500) NULL,
+    PlacaCreada       VARCHAR(10)   NULL,
+
+    CONSTRAINT PK_SolicitudActivo PRIMARY KEY (Id),
+
+    CONSTRAINT FK_SolicitudActivo_Solicitante
+        FOREIGN KEY (SolicitanteCorreo) REFERENCES Usuario(Correo),
+
+    CONSTRAINT FK_SolicitudActivo_Revisor
+        FOREIGN KEY (RevisorCorreo)     REFERENCES Usuario(Correo),
+
+    CONSTRAINT FK_SolicitudActivo_Categoria
+        FOREIGN KEY (CategoriaId)       REFERENCES Categoria(Id),
+
+    CONSTRAINT FK_SolicitudActivo_Encargado
+        FOREIGN KEY (EncargadoId)       REFERENCES Encargado(Id),
+
+    CONSTRAINT CHK_SolicitudActivo_Estado
+        CHECK (Estado IN ('Pendiente', 'Aprobada', 'Rechazada')),
+
+    CONSTRAINT CHK_SolicitudActivo_TipoPlaca
+        CHECK (TipoPlaca IN ('Institucional', 'Interno')),
+
+    -- Debe venir la categoría por exactamente una vía (existente o propuesta)
+    CONSTRAINT CHK_SolicitudActivo_Categoria
+        CHECK ((CASE WHEN CategoriaId IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN CategoriaNuevaNombre IS NULL THEN 0 ELSE 1 END) = 1),
+
+    -- Idem para el encargado
+    CONSTRAINT CHK_SolicitudActivo_Encargado_Via
+        CHECK ((CASE WHEN EncargadoId IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN EncargadoNuevoNombre IS NULL THEN 0 ELSE 1 END) = 1)
+);
+
+-- ============================================================
+-- DATOS INICIALES
+-- ============================================================
+
+-- Cuenta principal fija. Contraseña solo modificable directamente en base de datos.
+INSERT INTO Usuario (Nombre, Correo, Contrasena, Permisos, EsContrasenaTemporal, IntentosFallidos, Activo) VALUES
+    ('Administradora EIC', 'soporte.eic@ucr.ac.cr', '$2a$11$1Y1hjw9k.4l32F8Qx2r6zuD/zBHJ.DoReOR7X9zcm1ZSR6XDbPOY2', 'Administradora', 0, 0, 1);

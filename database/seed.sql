@@ -1,0 +1,2 @@
+-- seed.sql — datos complementarios opcionales.
+-- La cuenta soporte.eic@ucr.ac.cr ya se inserta en SIBI.sql; no se duplica aquí.

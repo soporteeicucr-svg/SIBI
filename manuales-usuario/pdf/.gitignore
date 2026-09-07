@@ -1,0 +1,7 @@
+# Temporales de build (ver README.md)
+node_modules/
+html/
+package.json
+package-lock.json
+mermaid.min.js
+dom.html

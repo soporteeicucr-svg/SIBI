@@ -1,0 +1,8 @@
+# Normalización de fin de línea. Los scripts que corren dentro de contenedores
+# Linux deben conservar LF aunque se editen/committeen desde Windows.
+*.sh   text eol=lf
+*.sql  text eol=lf
+database/init.sh text eol=lf
+
+# El resto: normalizar a LF en el repo, checkout según plataforma.
+* text=auto
