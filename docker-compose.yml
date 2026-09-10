@@ -43,7 +43,8 @@ services:
       context: ./frontend
     container_name: sibi-frontend
     ports:
-      - "8081:80"
+      # El host ya usa 8081 (Snipe-IT), 3000 y 4000 (sihco). SIBI publica en 8082.
+      - "8082:80"
     depends_on:
       - backend
     networks:

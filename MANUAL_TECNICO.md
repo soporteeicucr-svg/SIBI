@@ -87,7 +87,7 @@ flowchart LR
     end
 
     B -- HTTPS --> AP
-    AP -- "127.0.0.1:8081" --> F
+    AP -- "127.0.0.1:8082" --> F
     F -- "/api/*  →  proxy_pass" --> API
     F -- "/hubs/*  →  proxy_pass (WebSocket)" --> HUB
     API -- EF Core / TCP 1433 --> SQL
@@ -99,7 +99,7 @@ Puntos clave de esta arquitectura:
 - El **frontend nunca habla directo con el backend en producción**: nginx dentro del contenedor `frontend` actúa de reverse proxy para `/api/` y `/hubs/`, hacia el contenedor `backend` por la red interna de Docker (`sibi-net`). Esto evita problemas de CORS en producción y expone un solo puerto público.
 - En **desarrollo**, el proxy lo hace `vue-cli-service` (ver `frontend/vue.config.js`, `devServer.proxy`) hacia `http://localhost:5025`.
 - El backend expone Swagger solo en `Development` (`Program.cs`, `if (app.Environment.IsDevelopment())`).
-- Hay un **Apache del host** (fuera de Docker) descrito en `apache/eic.sibi.ucr.ac.cr.conf`, que es el que finalmente recibe tráfico del dominio `eic.sibi.ucr.ac.cr` (termina TLS en `:443`) y lo reenvía al contenedor `frontend` (publicado en el puerto `8081` del host). Es decir, hay **dos niveles de reverse proxy**: Apache en el host (dominio + TLS) y nginx dentro del contenedor `frontend` (SPA + proxy interno hacia backend). El servidor de producción ya no tiene nginx instalado; el proxy público es Apache (`mod_proxy_http` + `mod_proxy_wstunnel` para el WebSocket de SignalR).
+- Hay un **Apache del host** (fuera de Docker) descrito en `apache/eic.sibi.ucr.ac.cr.conf`, que es el que finalmente recibe tráfico del dominio `eic.sibi.ucr.ac.cr` (termina TLS en `:443`) y lo reenvía al contenedor `frontend` (publicado en el puerto `8082` del host). Es decir, hay **dos niveles de reverse proxy**: Apache en el host (dominio + TLS) y nginx dentro del contenedor `frontend` (SPA + proxy interno hacia backend). El servidor de producción ya no tiene nginx instalado; el proxy público es Apache (`mod_proxy_http` + `mod_proxy_wstunnel` para el WebSocket de SignalR).
 
 ---
 
@@ -485,9 +485,9 @@ Cada archivo es un wrapper 1:1 sobre un controller del backend (mismo nombre de 
 |---|---|---|---|
 | `db` | `./database` | ninguno (solo interno) | — |
 | `backend` | `./backend` | ninguno (solo interno, puerto 8080) | `db` (con `condition: service_healthy`) |
-| `frontend` | `./frontend` | `8081:80` | `backend` |
+| `frontend` | `./frontend` | `8082:80` | `backend` |
 
-Es decir: **el único puerto expuesto al host es 8081** (el frontend). El backend y la base de datos solo son alcanzables entre contenedores. El healthcheck de `db` corre `sqlcmd -Q "SELECT 1"` cada 10s (hasta 15 reintentos, con 30s de gracia inicial) — el backend no arranca hasta que ese healthcheck pase. Ambos contenedores `db` y `backend` fijan `TZ: America/Costa_Rica`, para que las fechas registradas en `Historial.FechaHora`, `SolicitudCambio.FechaSolicitud`/`FechaResolucion` y `Activo.FechaDesecho` (base del conteo de 365 días para elegibilidad de eliminación) queden en hora local y no en UTC del contenedor.
+Es decir: **el único puerto expuesto al host es 8082** (el frontend) — se eligió 8082 porque en el servidor de producción 8081 lo usa Snipe-IT y 3000/4000 los usa `sihco`. El backend y la base de datos solo son alcanzables entre contenedores. El healthcheck de `db` corre `sqlcmd -Q "SELECT 1"` cada 10s (hasta 15 reintentos, con 30s de gracia inicial) — el backend no arranca hasta que ese healthcheck pase. Ambos contenedores `db` y `backend` fijan `TZ: America/Costa_Rica`, para que las fechas registradas en `Historial.FechaHora`, `SolicitudCambio.FechaSolicitud`/`FechaResolucion` y `Activo.FechaDesecho` (base del conteo de 365 días para elegibilidad de eliminación) queden en hora local y no en UTC del contenedor.
 
 **`docker-compose.override.yml`** (en la raíz, no committeado a producción) es fusionado automáticamente por Docker Compose cuando existe, y fuerza `ASPNETCORE_ENVIRONMENT: Development` + `AllowedHosts: "*"` sobre el contenedor `backend` — pensado para levantar el stack completo de Docker en una máquina de desarrollo sin heredar las restricciones de producción (CORS abierto, Swagger habilitado). En el servidor real, desplegar copiando solo `docker-compose.yml`, sin este archivo.
 
@@ -529,18 +529,21 @@ docker compose down -v
 
 ### 10.4 Apache del servidor host
 
-`apache/eic.sibi.ucr.ac.cr.conf` **no se usa dentro de Docker**; es el vhost a instalar en el Apache del servidor físico/VM donde corre Docker, para que el dominio público `eic.sibi.ucr.ac.cr` llegue al contenedor `frontend` (puerto `8081` publicado en el host). El servidor de producción ya no tiene nginx; el reverse proxy público es Apache (`httpd`), que ya escucha en `:80` y `:443`.
+`apache/eic.sibi.ucr.ac.cr.conf` **no se usa dentro de Docker**; es el vhost a instalar en el Apache del servidor físico/VM donde corre Docker, para que el dominio público `eic.sibi.ucr.ac.cr` llegue al contenedor `frontend` (puerto `8082` publicado en el host). El servidor de producción ya no tiene nginx; el reverse proxy público es Apache (`httpd`), que ya escucha en `:80` y `:443`.
 
-Módulos requeridos: `proxy`, `proxy_http`, `proxy_wstunnel`, `rewrite`, `headers`, `ssl`.
+Módulos requeridos: `proxy`, `proxy_http`, `proxy_wstunnel`, `rewrite`, `headers` (más `ssl`, que ya está activo por los otros vhosts).
 
 ```bash
-sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers ssl
+sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers
 sudo cp apache/eic.sibi.ucr.ac.cr.conf /etc/apache2/sites-available/eic.sibi.ucr.ac.cr.conf
 sudo a2ensite eic.sibi.ucr.ac.cr
 sudo apache2ctl configtest && sudo systemctl reload apache2
+
+# TLS con Let's Encrypt (mismo método que horas.eic.ucr.ac.cr y tfg.eic.ucr.ac.cr):
+sudo certbot --apache -d eic.sibi.ucr.ac.cr
 ```
 
-El vhost trae dos `<VirtualHost>`: `:80` redirige a HTTPS (con una alternativa comentada para servir solo por HTTP), y `:443` termina TLS y hace `ProxyPass` a `http://127.0.0.1:8081/`. La regla `RewriteCond %{HTTP:Upgrade} =websocket` + `RewriteRule ... ws://... [P]` sobre `/hubs/` es la que permite que el WebSocket de SignalR haga el *upgrade* a través de este proxy (equivale al `map $http_upgrade` que usaba la config de nginx). Los `ProxyPass` específicos (`/hubs/`) van antes que el genérico (`/`). Puertos vecinos en el host: `3000` y `4000` los usan otros contenedores; `8081` es el de SIBI.
+El `.conf` versionado trae **un solo `<VirtualHost *:80>`** con el reverse proxy. `certbot --apache` genera después `eic.sibi.ucr.ac.cr-le-ssl.conf` (`:443`) con el certificado en `/etc/letsencrypt/live/eic.sibi.ucr.ac.cr/`, copia las reglas de proxy y agrega el redirect `80 → 443`. Conviene revisar que el `-le-ssl.conf` haya quedado con el bloque `RewriteCond %{HTTP:Upgrade} =websocket` + `RewriteRule ^/(hubs/.*)$ ws://127.0.0.1:8082/$1 [P,L]` y los `ProxyPass`; ese `RewriteRule [P]` es lo que permite el *upgrade* a WebSocket de SignalR a través del proxy (equivale al `map $http_upgrade` de nginx). Los `ProxyPass` específicos de `/hubs/` van antes que el genérico `/`. Puertos ya ocupados en el host de producción: `3000` y `4000` (`sihco`), `8081` (Snipe-IT); por eso SIBI publica en `8082`.
 
 El nginx **de dentro del contenedor `frontend`** (`frontend/nginx.conf`) no cambia: viene en la imagen `nginx:stable-alpine` y es independiente de lo que el host tenga instalado.
 
