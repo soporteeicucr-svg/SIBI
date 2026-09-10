@@ -69,6 +69,10 @@ flowchart LR
         B["Navegador (SPA Vue 3)"]
     end
 
+    subgraph "Servidor host"
+        AP["Apache (httpd)\n:80 / :443 — TLS + reverse proxy"]
+    end
+
     subgraph "Contenedor frontend (nginx:stable-alpine)"
         F["Archivos estáticos (dist/)\n+ nginx como reverse proxy"]
     end
@@ -82,7 +86,8 @@ flowchart LR
         SQL[("Base de datos SIBI")]
     end
 
-    B -- HTTPS --> F
+    B -- HTTPS --> AP
+    AP -- "127.0.0.1:8081" --> F
     F -- "/api/*  →  proxy_pass" --> API
     F -- "/hubs/*  →  proxy_pass (WebSocket)" --> HUB
     API -- EF Core / TCP 1433 --> SQL
@@ -94,7 +99,7 @@ Puntos clave de esta arquitectura:
 - El **frontend nunca habla directo con el backend en producción**: nginx dentro del contenedor `frontend` actúa de reverse proxy para `/api/` y `/hubs/`, hacia el contenedor `backend` por la red interna de Docker (`sibi-net`). Esto evita problemas de CORS en producción y expone un solo puerto público.
 - En **desarrollo**, el proxy lo hace `vue-cli-service` (ver `frontend/vue.config.js`, `devServer.proxy`) hacia `http://localhost:5025`.
 - El backend expone Swagger solo en `Development` (`Program.cs`, `if (app.Environment.IsDevelopment())`).
-- Hay un **servidor nginx del host** (fuera de Docker) descrito en `nginx/eic.sibi.ucr.ac.cr.conf`, que es el que finalmente recibe tráfico del dominio `eic.sibi.ucr.ac.cr` y lo reenvía al contenedor `frontend` (publicado en el puerto `8081` del host). Es decir, hay **dos niveles de nginx**: uno en el host (dominio, TLS terminado ahí presumiblemente por un proxy superior) y uno dentro del contenedor `frontend` (SPA + proxy interno hacia backend).
+- Hay un **Apache del host** (fuera de Docker) descrito en `apache/eic.sibi.ucr.ac.cr.conf`, que es el que finalmente recibe tráfico del dominio `eic.sibi.ucr.ac.cr` (termina TLS en `:443`) y lo reenvía al contenedor `frontend` (publicado en el puerto `8081` del host). Es decir, hay **dos niveles de reverse proxy**: Apache en el host (dominio + TLS) y nginx dentro del contenedor `frontend` (SPA + proxy interno hacia backend). El servidor de producción ya no tiene nginx instalado; el proxy público es Apache (`mod_proxy_http` + `mod_proxy_wstunnel` para el WebSocket de SignalR).
 
 ---
 
@@ -123,7 +128,8 @@ Puntos clave de esta arquitectura:
 
 ### Infraestructura
 - **Docker Compose** orquesta 3 servicios: `db`, `backend`, `frontend`
-- **nginx** como servidor web del frontend y como reverse proxy del host
+- **nginx** como servidor web del frontend (dentro del contenedor)
+- **Apache** (`httpd` del host) como reverse proxy público del dominio
 
 ---
 
@@ -161,7 +167,7 @@ SIBI/
 │   │   └── views/                # 1 vista por ruta/módulo
 │   ├── nginx.conf                # Config de nginx DENTRO del contenedor frontend
 │   └── Dockerfile
-├── nginx/eic.sibi.ucr.ac.cr.conf # Config de referencia para el nginx del SERVIDOR (host), no se usa en Docker
+├── apache/eic.sibi.ucr.ac.cr.conf # Vhost para el Apache del SERVIDOR (host), no se usa en Docker
 ├── tools/HashGenerator/           # Consola .NET para generar hashes BCrypt manualmente (setup inicial)
 ├── docker-compose.yml             # Orquesta db + backend + frontend
 └── .env.example                   # Plantilla de variables de entorno para docker compose
@@ -334,7 +340,7 @@ Es un backend minimal-hosting (top-level statements, sin `Startup.cs`). En orden
 3. Configura JWT Bearer: valida issuer, lifetime y firma; **no valida audience**. Tiene un hook especial (`OnMessageReceived`) para leer el token desde el **query string** (`?access_token=...`) cuando la petición es a `/hubs/*`, porque las conexiones WebSocket de SignalR no siempre pueden mandar el header `Authorization`.
 4. CORS: política `FrontendVue`. En `Development` permite **cualquier origen** (`SetIsOriginAllowed(_ => true)`); en producción, `https://eic.sibi.ucr.ac.cr` y `http://eic.sibi.ucr.ac.cr` (ambos esquemas explícitamente permitidos).
 5. Registra SignalR y los tres servicios de aplicación (`AuthService`, `HistorialService`, `NotificacionService`) como `Scoped`.
-6. Pipeline HTTP: Swagger (solo dev) → `UseForwardedHeaders` (para que el backend vea la IP/proto real detrás de los proxies nginx) → CORS → Auth → Controllers → Hub.
+6. Pipeline HTTP: Swagger (solo dev) → `UseForwardedHeaders` (para que el backend vea la IP/proto real detrás de los proxies: Apache del host + nginx del contenedor) → CORS → Auth → Controllers → Hub.
 
 ### 6.2 Controllers
 
@@ -521,9 +527,22 @@ docker compose down
 docker compose down -v
 ```
 
-### 10.4 nginx del servidor host
+### 10.4 Apache del servidor host
 
-`nginx/eic.sibi.ucr.ac.cr.conf` **no se usa dentro de Docker**; es la config a instalar en el nginx del servidor físico/VM donde corre Docker, para que el dominio público `eic.sibi.ucr.ac.cr` llegue al contenedor `frontend` (puerto `8081` publicado en el host). El archivo trae en comentarios las instrucciones de instalación (`sites-available` / `sites-enabled`) y un `map` necesario para que el upgrade de conexión a WebSocket (usado por SignalR) funcione a través de este proxy también.
+`apache/eic.sibi.ucr.ac.cr.conf` **no se usa dentro de Docker**; es el vhost a instalar en el Apache del servidor físico/VM donde corre Docker, para que el dominio público `eic.sibi.ucr.ac.cr` llegue al contenedor `frontend` (puerto `8081` publicado en el host). El servidor de producción ya no tiene nginx; el reverse proxy público es Apache (`httpd`), que ya escucha en `:80` y `:443`.
+
+Módulos requeridos: `proxy`, `proxy_http`, `proxy_wstunnel`, `rewrite`, `headers`, `ssl`.
+
+```bash
+sudo a2enmod proxy proxy_http proxy_wstunnel rewrite headers ssl
+sudo cp apache/eic.sibi.ucr.ac.cr.conf /etc/apache2/sites-available/eic.sibi.ucr.ac.cr.conf
+sudo a2ensite eic.sibi.ucr.ac.cr
+sudo apache2ctl configtest && sudo systemctl reload apache2
+```
+
+El vhost trae dos `<VirtualHost>`: `:80` redirige a HTTPS (con una alternativa comentada para servir solo por HTTP), y `:443` termina TLS y hace `ProxyPass` a `http://127.0.0.1:8081/`. La regla `RewriteCond %{HTTP:Upgrade} =websocket` + `RewriteRule ... ws://... [P]` sobre `/hubs/` es la que permite que el WebSocket de SignalR haga el *upgrade* a través de este proxy (equivale al `map $http_upgrade` que usaba la config de nginx). Los `ProxyPass` específicos (`/hubs/`) van antes que el genérico (`/`). Puertos vecinos en el host: `3000` y `4000` los usan otros contenedores; `8081` es el de SIBI.
+
+El nginx **de dentro del contenedor `frontend`** (`frontend/nginx.conf`) no cambia: viene en la imagen `nginx:stable-alpine` y es independiente de lo que el host tenga instalado.
 
 ---
 
@@ -811,7 +830,7 @@ Se dejan registrados por si el historial de commits no es suficiente contexto:
 
 | Síntoma | Causa probable | Dónde mirar |
 |---|---|---|
-| Login funciona pero SignalR nunca conecta / no llegan notificaciones | Token no llega al hub, o CORS bloqueando el handshake — **o simplemente el rol conectado no es GTI/Administradora**, ya que `AppLayout.vue` solo abre la conexión `if (auth.esGTI)` | Verificar que la ruta pase por `/hubs/` en el proxy (nginx o dev-server), el hook `OnMessageReceived` en `Program.cs`, y el rol de la cuenta con la que se prueba |
+| Login funciona pero SignalR nunca conecta / no llegan notificaciones | Token no llega al hub, o CORS bloqueando el handshake — **o simplemente el rol conectado no es GTI/Administradora**, ya que `AppLayout.vue` solo abre la conexión `if (auth.esGTI)` | Verificar que la ruta pase por `/hubs/` en cada proxy (Apache del host con `proxy_wstunnel`, nginx del contenedor, o el dev-server), el hook `OnMessageReceived` en `Program.cs`, y el rol de la cuenta con la que se prueba |
 | Frontend en producción no puede llamar a la API (bloqueado por CORS) | El origen desde el que sirve el frontend no está en la lista permitida — `Program.cs` solo acepta `https://eic.sibi.ucr.ac.cr` y `http://eic.sibi.ucr.ac.cr` en producción (por ejemplo, un dominio de Vercel u otro no calzaría) | `Program.cs`, política `FrontendVue` |
 
 ### 17.3 Datos, importación y lógica de negocio
