@@ -175,7 +175,7 @@ const todosLosManuales = [
     key: 'tecnico',
     label: 'Manual Técnico',
     descripcion: 'Arquitectura, despliegue, base de datos y configuración del sistema',
-    url: 'https://6f33fa7f78ea46e2aaca-my.sharepoint.com/:b:/g/personal/soporte_eic_ucr_ac_cr/IQBU84UjzLcKTKpYoN2fNj7zAdDO0bUnAMtMjW7Fr57T80c?e=sXzpcH',
+    url: 'https://6f33fa7f78ea46e2aaca-my.sharepoint.com/shared?listurl=https%3A%2F%2F6f33fa7f78ea46e2aaca%2Dmy%2Esharepoint%2Ecom%2Fpersonal%2Fsoporte%5Feic%5Fucr%5Fac%5Fcr%2FDocuments&id=%2Fpersonal%2Fsoporte%5Feic%5Fucr%5Fac%5Fcr%2FDocuments%2FSIBI%2FMANUAL%5FTECNICO%2Epdf&parent=%2Fpersonal%2Fsoporte%5Feic%5Fucr%5Fac%5Fcr%2FDocuments%2FSIBI&shareLink=1&ga=1',
     roles: ['Administradora']
   }
 ]
