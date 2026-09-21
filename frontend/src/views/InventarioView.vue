@@ -135,6 +135,41 @@
         </select>
       </div>
 
+      <!-- Tipo de placa y orden -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+        <select
+          v-model="tipoPlaca"
+          class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0066cc] focus:border-transparent outline-none"
+        >
+          <option value="">Todos los tipos de placa</option>
+          <option value="Institucional">Institucional</option>
+          <option value="Interno">Interno</option>
+        </select>
+
+        <select
+          v-model="ordenarPor"
+          class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0066cc] focus:border-transparent outline-none"
+        >
+          <option value="placa">Ordenar por: Placa</option>
+          <option value="tipoplaca">Ordenar por: Tipo de placa</option>
+          <option value="articulo">Ordenar por: Artículo</option>
+          <option value="marca">Ordenar por: Marca</option>
+          <option value="categoria">Ordenar por: Categoría</option>
+          <option value="estado">Ordenar por: Estado</option>
+        </select>
+
+        <button
+          type="button"
+          @click="direccion = direccion === 'asc' ? 'desc' : 'asc'"
+          class="w-full px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition flex items-center justify-center gap-2 text-sm text-gray-700"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 transition-transform" :class="direccion === 'desc' ? 'rotate-180' : ''" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+          </svg>
+          {{ direccion === 'asc' ? 'Ascendente' : 'Descendente' }}
+        </button>
+      </div>
+
       <!-- Quitar filtros -->
       <div v-if="hayFiltros" class="mt-3 flex justify-end">
         <button
@@ -340,6 +375,9 @@ const tamano = ref(10)
 const busqueda = ref('')
 const categoriasIds = ref([])
 const estado = ref('')
+const tipoPlaca = ref('')
+const ordenarPor = ref('placa')
+const direccion = ref('asc')
 const categorias = ref([])
 const encargados = ref([])
 const loading = ref(false)
@@ -353,12 +391,13 @@ const categoriaDropdownRef = ref(null)
 
 const totalPaginas = computed(() => Math.max(1, Math.ceil(total.value / tamano.value)))
 const exportando = ref(false)
-const hayFiltros = computed(() => !!busqueda.value || categoriasIds.value.length > 0 || !!estado.value)
+const hayFiltros = computed(() => !!busqueda.value || categoriasIds.value.length > 0 || !!estado.value || !!tipoPlaca.value)
 
 function quitarFiltros() {
   busqueda.value = ''
   categoriasIds.value = []
   estado.value = ''
+  tipoPlaca.value = ''
 }
 
 function handleClickOutside(e) {
@@ -373,11 +412,17 @@ function activoToFila(a) {
   return [a.placa, a.tipoPlaca, a.articulo, a.marca, a.modelo, a.numSerial, a.categoriaNombre, a.ubicacionActual, a.encargadoActual, a.estado]
 }
 
-async function obtenerTodosParaExportar() {
-  const params = { pagina: 1, tamano: 9999 }
+function paramsComunes() {
+  const params = { ordenarPor: ordenarPor.value, direccion: direccion.value }
   if (busqueda.value) params.busqueda = busqueda.value
   if (categoriasIds.value.length) params.categoriaIds = categoriasIds.value
   if (estado.value) params.estado = estado.value
+  if (tipoPlaca.value) params.tipoPlaca = tipoPlaca.value
+  return params
+}
+
+async function obtenerTodosParaExportar() {
+  const params = { ...paramsComunes(), pagina: 1, tamano: 9999 }
   const { data } = await activoService.listar(params)
   return data.items
 }
@@ -450,10 +495,7 @@ async function exportarPDF() {
 async function cargarActivos() {
   loading.value = true
   try {
-    const params = { pagina: pagina.value, tamano: tamano.value }
-    if (busqueda.value) params.busqueda = busqueda.value
-    if (categoriasIds.value.length) params.categoriaIds = categoriasIds.value
-    if (estado.value) params.estado = estado.value
+    const params = { ...paramsComunes(), pagina: pagina.value, tamano: tamano.value }
     const { data } = await activoService.listar(params)
     activos.value = data.items
     total.value = data.total
@@ -476,7 +518,7 @@ onUnmounted(() => {
 })
 
 watch([pagina], cargarActivos)
-watch([busqueda, categoriasIds, estado], () => { pagina.value = 1; cargarActivos() }, { deep: true })
+watch([busqueda, categoriasIds, estado, tipoPlaca, ordenarPor, direccion], () => { pagina.value = 1; cargarActivos() }, { deep: true })
 
 async function descargarPlantilla() {
   const XLSX = await import('xlsx')

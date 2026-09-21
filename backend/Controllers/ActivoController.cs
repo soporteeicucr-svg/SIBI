@@ -29,6 +29,9 @@ public class ActivoController : ControllerBase
         [FromQuery] string? busqueda,
         [FromQuery] int[]? categoriaIds,
         [FromQuery] string? estado,
+        [FromQuery] string? tipoPlaca,
+        [FromQuery] string? ordenarPor,
+        [FromQuery] string? direccion,
         [FromQuery] int pagina = 1,
         [FromQuery] int tamano = 20)
     {
@@ -53,9 +56,23 @@ public class ActivoController : ControllerBase
         if (!string.IsNullOrWhiteSpace(estado))
             query = query.Where(a => a.Estado == estado);
 
+        if (!string.IsNullOrWhiteSpace(tipoPlaca))
+            query = query.Where(a => a.PlacaNavigation.Tipo == tipoPlaca);
+
+        var descendente = string.Equals(direccion, "desc", StringComparison.OrdinalIgnoreCase);
+        query = ordenarPor?.ToLowerInvariant() switch
+        {
+            "tipoplaca" => descendente ? query.OrderByDescending(a => a.PlacaNavigation.Tipo).ThenBy(a => a.Placa)
+                                        : query.OrderBy(a => a.PlacaNavigation.Tipo).ThenBy(a => a.Placa),
+            "articulo"  => descendente ? query.OrderByDescending(a => a.Articulo) : query.OrderBy(a => a.Articulo),
+            "marca"     => descendente ? query.OrderByDescending(a => a.Marca)    : query.OrderBy(a => a.Marca),
+            "categoria" => descendente ? query.OrderByDescending(a => a.Categoria.Nombre) : query.OrderBy(a => a.Categoria.Nombre),
+            "estado"    => descendente ? query.OrderByDescending(a => a.Estado)   : query.OrderBy(a => a.Estado),
+            _           => descendente ? query.OrderByDescending(a => a.Placa)    : query.OrderBy(a => a.Placa),
+        };
+
         var total = await query.CountAsync();
         var items = await query
-            .OrderBy(a => a.Placa)
             .Skip((pagina - 1) * tamano)
             .Take(tamano)
             .ToListAsync();
