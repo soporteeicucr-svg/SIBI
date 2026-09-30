@@ -48,7 +48,8 @@ public class ActivoController : ControllerBase
                 a.Marca.Contains(busqueda) ||
                 a.Modelo.Contains(busqueda) ||
                 a.NumSerial.Contains(busqueda) ||
-                a.Articulo.Contains(busqueda));
+                a.Articulo.Contains(busqueda) ||
+                a.UbicacionNavigation.Actual.Contains(busqueda));
 
         if (categoriaIds is { Length: > 0 })
             query = query.Where(a => categoriaIds.Contains(a.CategoriaId));
