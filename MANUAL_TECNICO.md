@@ -547,6 +547,24 @@ El `.conf` versionado trae **un solo `<VirtualHost *:80>`** con el reverse proxy
 
 El nginx **de dentro del contenedor `frontend`** (`frontend/nginx.conf`) no cambia: viene en la imagen `nginx:stable-alpine` y es independiente de lo que el host tenga instalado.
 
+#### Incidente: el vhost de SIBI servía dominios ajenos (`www.tfg.eic.ucr.ac.cr`, etc.)
+
+Detectado en producción: `http://www.tfg.eic.ucr.ac.cr/` devolvía el SPA de SIBI (en HTTP plano, "Not Secure") en vez de Moodle, mientras `https://tfg.eic.ucr.ac.cr/` (sin `www`) abría Moodle correctamente.
+
+**Causa**: Apache elige como vhost "default" de un puerto (para cualquier `Host` que no matchee ningún `ServerName`/`ServerAlias` declarado) el **primer vhost por orden alfabético de archivo** en `sites-enabled/`. `eic.sibi.ucr.ac.cr.conf` ordena antes que los demás vhosts del Apache del host (ej. `horas.eic.ucr.ac.cr.conf`), así que desde que se activó el sitio de SIBI, su vhost pasó a ser el default silencioso — para **cualquier** dominio sin vhost propio (`www.tfg...`, escaneos por IP, typos, etc.). El `RewriteCond %{SERVER_NAME} =eic.sibi.ucr.ac.cr` que agrega certbot para el redirect a HTTPS no protege de esto: `%{SERVER_NAME}` con `UseCanonicalName Off` (default) refleja el `Host` real de la petición, así que para un `Host` ajeno esa condición no matchea, el redirect no dispara, y la petición sigue de largo al `ProxyPass /` → el nginx del contenedor (`server_name _;`, sin validar `Host`) sirve el SPA igual.
+
+**Arreglo** (en `apache/eic.sibi.ucr.ac.cr.conf`, antes de cualquier `ProxyPass`):
+
+```apache
+RewriteEngine On
+RewriteCond %{HTTP_HOST} !^eic\.sibi\.ucr\.ac\.cr$ [NC]
+RewriteRule ^ - [F]
+```
+
+Rechaza con `403` cualquier `Host` que no sea exactamente `eic.sibi.ucr.ac.cr`, antes de llegar al `ProxyPass`. Debe aplicarse en **ambos** vhosts: el `:80` versionado en el repo, y manualmente en el `:443` (`/etc/apache2/sites-available/eic.sibi.ucr.ac.cr-le-ssl.conf`), que es generado por certbot y no se regenera solo — un `certbot renew` posterior solo renueva el certificado, no toca el cuerpo del vhost, así que la edición manual persiste.
+
+El arreglo de fondo (declarar un vhost `000-default` explícito que no pertenezca a ninguna app, para que ninguna termine siendo el catch-all por accidente) es responsabilidad de quien administra el Apache completo del host, no de SIBI — esto solo blinda el vhost propio.
+
 ---
 
 ## 11. Despliegue alternativo (frontend/backend separados, ej. Vercel)
@@ -814,6 +832,7 @@ Se dejan registrados por si el historial de commits no es suficiente contexto:
 - **Notificaciones de inscripción**: el badge y el panel de la campana (`AppLayout.vue`) y la tarjeta "Solicitudes Pendientes" del Dashboard de la Jefa ahora combinan `SolicitudCambio` + `SolicitudActivo` (antes solo contaban/mostraban las de cambio).
 - **Propuesta de categoría/encargado dentro de la inscripción**: nuevas columnas anulables en `SolicitudActivo` (`CategoriaNuevaNombre`/`Icono`, `EncargadoNuevoNombre`/`Rol`) + `CategoriaId`/`EncargadoId` anulables + CHECK "una sola vía"; `SolicitudActivoController.Aprobar` materializa las propuestas antes de crear el activo; `ActivoModal` (modo inscripción) propone en vez de crear; `SolicitudAltaModal` gana el toggle Existente/Nueva. La migración `002_solicitud_activo.sql` ALTERa la tabla si ya existía; se aplica sola al reconstruir/reiniciar el contenedor `db`.
 - **Migraciones de BD cableadas**: `database/migrations/NNN_*.sql` (idempotentes) + registro en `SchemaMigracion`; `init.sh` las aplica en cada arranque (fresh o existente). Antes `migrate_solicitud_activo.sql` había que correrlo a mano. Ver [5.2](#52-particularidades-importantes-del-esquema) punto 6 y [5.3](#53-orden-de-arranque-de-la-base-de-datos-databaseinitsh).
+- **De nginx a Apache como reverse proxy del host**: el servidor de producción dejó de tener nginx; `apache/eic.sibi.ucr.ac.cr.conf` + Let's Encrypt (`certbot --apache`). Se detectó y corrigió que el vhost de SIBI podía quedar como "default" del Apache del host para dominios ajenos sin vhost propio — ver [10.4](#104-apache-del-servidor-host).
 
 ---
 
@@ -835,6 +854,7 @@ Se dejan registrados por si el historial de commits no es suficiente contexto:
 |---|---|---|
 | Login funciona pero SignalR nunca conecta / no llegan notificaciones | Token no llega al hub, o CORS bloqueando el handshake — **o simplemente el rol conectado no es GTI/Administradora**, ya que `AppLayout.vue` solo abre la conexión `if (auth.esGTI)` | Verificar que la ruta pase por `/hubs/` en cada proxy (Apache del host con `proxy_wstunnel`, nginx del contenedor, o el dev-server), el hook `OnMessageReceived` en `Program.cs`, y el rol de la cuenta con la que se prueba |
 | Frontend en producción no puede llamar a la API (bloqueado por CORS) | El origen desde el que sirve el frontend no está en la lista permitida — `Program.cs` solo acepta `https://eic.sibi.ucr.ac.cr` y `http://eic.sibi.ucr.ac.cr` en producción (por ejemplo, un dominio de Vercel u otro no calzaría) | `Program.cs`, política `FrontendVue` |
+| Un dominio ajeno (ej. `www.tfg.eic.ucr.ac.cr`) abre el SPA de SIBI en vez de la app que debería, en HTTP sin TLS | El vhost de SIBI quedó como "default" accidental del Apache del host por orden alfabético de archivo — ver [10.4](#104-apache-del-servidor-host) | `apache/eic.sibi.ucr.ac.cr.conf` (guard `RewriteCond %{HTTP_HOST} !^eic\.sibi\.ucr\.ac\.cr$` + `[F]`), y replicarlo a mano en `eic.sibi.ucr.ac.cr-le-ssl.conf` del servidor |
 
 ### 17.3 Datos, importación y lógica de negocio
 
